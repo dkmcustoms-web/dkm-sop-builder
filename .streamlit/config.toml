@@ -1,7 +1,7 @@
 [server]
 headless = true
 address = "0.0.0.0"
-enableCORS = false
+# enableCORS niet zetten: standaard true, en XSRF-bescherming blijft zo werken.
 enableXsrfProtection = true
 
 [browser]
