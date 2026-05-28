@@ -1,4 +1,6 @@
 streamlit
+sqlalchemy
 psycopg[binary]
+sqlparse
 bcrypt
 fpdf2
