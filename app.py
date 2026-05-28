@@ -1,15 +1,13 @@
 """
-DKM SOP Builder — Streamlit app (Postgres / Neon).
+DKM SOP Builder — Streamlit app (SQLAlchemy + Neon).
 
 Rollen:
-  admin    : beheert blok-templates (NL+EN), klanten/users, SOP's
+  admin    : beheert blok-templates (NL+EN) + SOP's
   editor   : maakt & vult SOP's (geen templatebeheer)
   customer : read-only eigen gepubliceerde SOP's + PDF-download
 
-Vereist env-var DATABASE_URL (Neon connection string).
+Vereist DATABASE_URL (Railway env-var of st.secrets).
 Demo-logins (seed): admin/admin123 · editor/editor123 · import4you/klant123
-
-Draaien:  streamlit run app.py
 """
 
 import streamlit as st
@@ -26,8 +24,8 @@ st.markdown(f"""
       background: {DKM_BLUE}; border: none; color: #0a2a33; font-weight: 600; }}
 </style>""", unsafe_allow_html=True)
 
-# Schema + demo-users 1x klaarzetten
-db.init_schema()
+# Schema + demo-users 1x klaarzetten (idempotent)
+db.init_db()
 db.seed_users()
 
 LANGS = {"Nederlands": "nl", "English": "en"}
@@ -41,8 +39,7 @@ def login_view():
         login = st.text_input("Login")
         pw = st.text_input("Wachtwoord", type="password")
         if st.form_submit_button("Inloggen", type="primary"):
-            with db.get_conn() as c:
-                row = c.execute("SELECT * FROM users WHERE login = %s", (login,)).fetchone()
+            row = db.get_user(login)
             if row and db.check_pw(pw, row["password_hash"]):
                 st.session_state.user = row
                 st.rerun()
@@ -62,9 +59,7 @@ def templates_page():
     st.caption("Standaardblokken met default tekst in beide talen. De tekst wordt "
                "gekopieerd in een SOP bij toevoegen — wijzigingen hier raken "
                "bestaande SOP's niet.")
-    with db.get_conn() as c:
-        rows = c.execute("SELECT * FROM block_templates ORDER BY sort_order").fetchall()
-    for t in rows:
+    for t in db.list_all_templates():
         label = f"[{t['category']}] {t['title_nl']} / {t['title_en']}"
         with st.expander(label + ("" if t["active"] else "  (inactief)")):
             with st.form(f"tpl_{t['id']}"):
@@ -76,12 +71,7 @@ def templates_page():
                 cen = c2.text_area("Content (EN)", t["content_en"], height=200)
                 active = st.checkbox("Actief", t["active"])
                 if st.form_submit_button("Opslaan", type="primary"):
-                    with db.get_conn() as cc:
-                        cc.execute(
-                            "UPDATE block_templates SET category=%s, title_nl=%s, "
-                            "title_en=%s, content_nl=%s, content_en=%s, active=%s "
-                            "WHERE id=%s",
-                            (cat, tnl, ten, cnl, cen, active, t["id"]))
+                    db.update_template(t["id"], cat, tnl, ten, cnl, cen, active)
                     st.success("Opgeslagen."); st.rerun()
 
     st.divider()
@@ -93,21 +83,34 @@ def templates_page():
         cnl = c1.text_area("Tekst (NL)", height=160)
         cen = c2.text_area("Content (EN)", height=160)
         if st.form_submit_button("Toevoegen", type="primary") and tnl and ten:
-            with db.get_conn() as cc:
-                n = cc.execute("SELECT COALESCE(MAX(sort_order),0)+1 AS n "
-                               "FROM block_templates").fetchone()["n"]
-                cc.execute(
-                    "INSERT INTO block_templates (category,title_nl,title_en,"
-                    "content_nl,content_en,sort_order) VALUES (%s,%s,%s,%s,%s,%s)",
-                    (cat or "Algemeen", tnl, ten, cnl, cen, n))
+            db.add_template(cat or "Algemeen", tnl, ten, cnl, cen)
             st.success("Blok toegevoegd."); st.rerun()
 
 
 # ---------- Editor/Admin: SOP-bouwer ----------
 def builder_page(user):
     st.header("SOP's")
+
+    # Nieuwe klant aanmaken (naam + EORI verplicht)
+    with st.expander("👤 Nieuwe klant aanmaken"):
+        with st.form("new_customer"):
+            cn = st.text_input("Klantnaam *")
+            ce = st.text_input("EORI-nummer *", placeholder="bv. BE0123456789")
+            submitted = st.form_submit_button("Klant aanmaken", type="primary")
+            if submitted:
+                if not cn.strip() or not ce.strip():
+                    st.error("Klantnaam én EORI zijn verplicht.")
+                else:
+                    db.create_customer(cn, ce)
+                    st.success(f"Klant '{cn.strip()}' aangemaakt.")
+                    st.rerun()
+
     customers = db.list_customers()
     cmap = {c["name"]: c["id"] for c in customers}
+
+    if not customers:
+        st.info("Maak eerst een klant aan voordat je een SOP kunt maken.")
+        return
 
     with st.expander("➕ Nieuwe SOP aanmaken"):
         with st.form("new_sop"):
@@ -115,12 +118,7 @@ def builder_page(user):
             title = st.text_input("Titel", "SOP Douaneafhandeling")
             lang_label = st.selectbox("Taal van deze SOP", list(LANGS.keys()))
             if st.form_submit_button("Aanmaken", type="primary") and title:
-                with db.get_conn() as c:
-                    sid = c.execute(
-                        "INSERT INTO sops (customer_id,title,lang,updated_by) "
-                        "VALUES (%s,%s,%s,%s) RETURNING id",
-                        (cmap[cust], title, LANGS[lang_label], user["login"])
-                    ).fetchone()["id"]
+                sid = db.create_sop(cmap[cust], title, LANGS[lang_label], user["login"])
                 st.session_state.edit_sop = sid
                 st.rerun()
 
@@ -142,19 +140,27 @@ def edit_sop_view(sop_id, user):
     sop, blocks = db.get_sop(sop_id)
     st.subheader(f"✏️ {sop['title']}  ·  {sop['customer_name']}  ·  {sop['lang'].upper()}")
 
-    # Blokken in de SOP-taal uit de bibliotheek
+    # 'Opgemaakt op'-datum (handmatig instelbaar); aanmaakdatum staat los in updated_at.
+    from datetime import date as _date
+    cur = sop.get("prepared_on")
+    if isinstance(cur, str):
+        try:
+            cur = _date.fromisoformat(cur)
+        except ValueError:
+            cur = _date.today()
+    dc1, dc2 = st.columns([1, 3])
+    new_date = dc1.date_input("Opgemaakt op", value=cur or _date.today(),
+                              key=f"prep_{sop_id}", format="DD/MM/YYYY")
+    if new_date != cur:
+        db.set_prepared_on(sop_id, new_date)
+
     templates = db.list_templates(lang=sop["lang"])
     tmap = {f"[{t['category']}] {t['title']}": t for t in templates}
     c1, c2 = st.columns([4, 1])
     pick = c1.selectbox("Blok toevoegen uit bibliotheek", list(tmap.keys()))
     if c2.button("Toevoegen", type="primary"):
         t = tmap[pick]
-        with db.get_conn() as c:
-            n = c.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS n FROM sop_blocks "
-                          "WHERE sop_id=%s", (sop_id,)).fetchone()["n"]
-            c.execute("INSERT INTO sop_blocks (sop_id,template_id,title,content,sort_order)"
-                      " VALUES (%s,%s,%s,%s,%s)",
-                      (sop_id, t["id"], t["title"], t["content"], n))
+        db.add_sop_block(sop_id, t["id"], t["title"], t["content"])
         st.rerun()
 
     st.markdown("---")
@@ -163,27 +169,21 @@ def edit_sop_view(sop_id, user):
             bc = st.columns([6, 1, 1, 1])
             bc[0].markdown(f"**{b['title']}**")
             if bc[1].button("⬆", key=f"up_{b['id']}", disabled=(i == 0)):
-                _swap(blocks[i], blocks[i-1]); st.rerun()
+                db.swap_block_order(blocks[i], blocks[i-1]); st.rerun()
             if bc[2].button("⬇", key=f"dn_{b['id']}", disabled=(i == len(blocks)-1)):
-                _swap(blocks[i], blocks[i+1]); st.rerun()
+                db.swap_block_order(blocks[i], blocks[i+1]); st.rerun()
             if bc[3].button("🗑", key=f"del_{b['id']}"):
-                with db.get_conn() as c:
-                    c.execute("DELETE FROM sop_blocks WHERE id=%s", (b["id"],))
-                st.rerun()
+                db.delete_sop_block(b["id"]); st.rerun()
             nt = st.text_input("Titel", b["title"], key=f"bt_{b['id']}")
             nc = st.text_area("Tekst", b["content"], key=f"bc_{b['id']}", height=160)
             if st.button("Blok opslaan", key=f"sv_{b['id']}"):
-                with db.get_conn() as c:
-                    c.execute("UPDATE sop_blocks SET title=%s, content=%s WHERE id=%s",
-                              (nt, nc, b["id"]))
+                db.update_sop_block(b["id"], nt, nc)
                 st.toast("Blok opgeslagen"); st.rerun()
 
     st.markdown("---")
     ac = st.columns(3)
     if ac[0].button("✅ Publiceren", type="primary"):
-        with db.get_conn() as c:
-            c.execute("UPDATE sops SET status='published', updated_by=%s, "
-                      "updated_at=now() WHERE id=%s", (user["login"], sop_id))
+        db.publish_sop(sop_id, user["login"])
         st.success("Gepubliceerd — zichtbaar voor de klant."); st.rerun()
     if ac[1].button("📄 Genereer PDF"):
         sop, blocks = db.get_sop(sop_id)
@@ -193,12 +193,6 @@ def edit_sop_view(sop_id, user):
     if "pdf" in st.session_state:
         st.download_button("⬇ Download PDF", st.session_state.pdf,
                            file_name=f"SOP_{sop['title']}.pdf", mime="application/pdf")
-
-
-def _swap(a, b):
-    with db.get_conn() as c:
-        c.execute("UPDATE sop_blocks SET sort_order=%s WHERE id=%s", (b["sort_order"], a["id"]))
-        c.execute("UPDATE sop_blocks SET sort_order=%s WHERE id=%s", (a["sort_order"], b["id"]))
 
 
 # ---------- Customer ----------

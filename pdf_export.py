@@ -66,12 +66,32 @@ def build_sop_pdf(sop, blocks) -> bytes:
                    new_x="LMARGIN", new_y="NEXT")
     pdf.set_font(FAM, "", 10)
     pdf.set_text_color(100, 100, 100)
-    updated = sop.get("updated_at")
-    if isinstance(updated, datetime):
-        updated = updated.date().isoformat()
-    pdf.cell(0, 6, f"Klant: {sop['customer_name']}   |   Versie {sop.get('version', 1)}"
-                   f"   |   {updated or date.today().isoformat()}",
-             new_x="LMARGIN", new_y="NEXT")
+
+    def _fmt(d):
+        if isinstance(d, datetime):
+            return d.date().strftime("%d/%m/%Y")
+        if isinstance(d, date):
+            return d.strftime("%d/%m/%Y")
+        if isinstance(d, str) and d:
+            try:
+                return date.fromisoformat(d[:10]).strftime("%d/%m/%Y")
+            except ValueError:
+                return d
+        return ""
+
+    prepared = _fmt(sop.get("prepared_on")) or date.today().strftime("%d/%m/%Y")
+    updated = _fmt(sop.get("updated_at"))
+
+    line1 = f"Klant: {sop['customer_name']}"
+    if sop.get("eori"):
+        line1 += f"   |   EORI: {sop['eori']}"
+    line1 += f"   |   Versie {sop.get('version', 1)}"
+    pdf.cell(0, 6, line1, new_x="LMARGIN", new_y="NEXT")
+
+    line2 = f"Opgemaakt op: {prepared}"
+    if updated:
+        line2 += f"   |   Laatst bijgewerkt: {updated}"
+    pdf.cell(0, 6, line2, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
     pdf.set_draw_color(*DKM_BLUE)
     pdf.set_line_width(0.6)

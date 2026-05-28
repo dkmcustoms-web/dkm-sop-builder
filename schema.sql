@@ -9,6 +9,7 @@
 CREATE TABLE IF NOT EXISTS customers (
     id          BIGSERIAL PRIMARY KEY,
     name        TEXT NOT NULL,
+    eori        TEXT NOT NULL,
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS sops (
     lang         TEXT NOT NULL DEFAULT 'nl' CHECK (lang IN ('nl','en')),
     status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published')),
     version      INTEGER DEFAULT 1,
+    prepared_on  DATE DEFAULT CURRENT_DATE,
     updated_by   TEXT,
     updated_at   TIMESTAMPTZ DEFAULT now()
 );
@@ -133,6 +135,7 @@ Outside these hours, orders are processed on the next working day.$blk$, 4),
 - Lossingslocatie (terminal of magazijn)
 - Referenties (PO, dossiernummer, MRN indien van toepassing)
 - Geldig en correct mandaat
+- EORI-nummer importeur: [EORI]
 
 DKM Customs behoudt zich het recht voor bijkomende informatie op te vragen indien vereist door de douanewetgeving.$blk$,
  $blk$[CUSTOMER] must provide the following documents and data timely and completely:
@@ -146,6 +149,7 @@ DKM Customs behoudt zich het recht voor bijkomende informatie op te vragen indie
 - Place of unloading (terminal or warehouse)
 - References (PO, file number, MRN if applicable)
 - Valid and correct mandate
+- Importer EORI number: [EORI]
 
 DKM Customs reserves the right to request additional information if required by customs legislation.$blk$, 5),
 
