@@ -1,0 +1,26 @@
+# Secrets - nooit committen
+.env
+.env.local
+.env.*.local
+
+# Maar het sjabloon WEL meenemen
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Streamlit lokale secrets
+.streamlit/secrets.toml
+
+# Lokale SQLite (oud prototype)
+*.db
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

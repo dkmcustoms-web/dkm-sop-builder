@@ -17,7 +17,21 @@ import psycopg
 from psycopg.rows import dict_row
 import bcrypt
 
-DATABASE_URL = os.environ["DATABASE_URL"]  # faalt expliciet als niet gezet
+# Lokaal: lees .env in als python-dotenv beschikbaar is.
+# Op Railway/Azure komt DATABASE_URL uit de echte env-vars; .env bestaat daar niet.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL ontbreekt. Lokaal: zet hem in .env. "
+        "Op Railway: Settings > Variables > DATABASE_URL "
+        "(Neon connection string met ?sslmode=require)."
+    )
 
 
 @contextmanager
